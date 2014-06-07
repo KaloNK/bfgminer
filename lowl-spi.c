@@ -265,18 +265,15 @@ void *spi_emit_data(struct spi_port *port, uint16_t addr, const void *buf, size_
 
 #ifdef USE_BFSB
 static int last_bank = -2;
-// #define ACTIVE_LOW_OE
-// #define EXTENDED_GPIO_LIST
-
 void spi_bfsb_select_bank(int bank)
 {
 	if (bank == last_bank)
 		return;
+
+	int i = BFSB_BANKS_CNT;	// How much of the list to use
 #ifndef EXTENDED_GPIO_LIST
-	int i = 4;
 	const int banks[4]={18,23,24,25}; // GPIO connected to OE of level shifters on BFSB boards
 #else
-	int i = 8;	// How much of the list to use
 	const int banks[16]={7,8,25,24,23,22,27,17,4,18,15,14,2,3,28,29,30,31};
 /*
 	7,8 are CE0 and CE1, as they are not used for SPI - can be used as OE
@@ -296,7 +293,7 @@ void spi_bfsb_select_bank(int bank)
 #endif
 	}
 
-	if (bank != -1)
+	if (bank >= 0)
 	{
 #ifndef ACTIVE_LOW_OE
 		GPIO_SET = 1 << banks[bank];

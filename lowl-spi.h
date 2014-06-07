@@ -7,6 +7,10 @@
 
 #define SPIMAXSZ (256*1024)
 
+// #define ACTIVE_LOW_OE
+// #define EXTENDED_GPIO_LIST
+#define BFSB_BANKS_CNT	4
+
 /* Initialize SPI using this function */
 void spi_init(void);
 

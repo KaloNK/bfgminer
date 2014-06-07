@@ -66,7 +66,7 @@ int bfsb_autodetect()
 
 	dummy_cgpu.device_data = &dummy_bitfury;
 	
-	for (i = 0; i < 4; i++)
+	for (i = 0; i < BFSB_BANKS_CNT; i++)
 	{
 			int chip_n;
 			
