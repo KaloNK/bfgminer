@@ -290,6 +290,133 @@ bool fudge_nonce(struct work * const work, uint32_t *nonce_p) {
 	return false;
 }
 
+static void bitfury_chipgen_detect(uint32_t nonce, struct bitfury_device *bitfury, struct cgpu_info *proc,
+									int stat_elapsed_secs)
+{
+	if (likely(bitfury->chipgen))
+		return;
+
+	switch (nonce & 0xe03fffff)
+	{
+		case 0x40060f87:
+		case 0x600054e0:
+		case 0x80156423:
+		case 0x991abced:
+		case 0xa004b2a0:
+			if (++bitfury->chipgen_probe > 0x10)
+				bitfury->chipgen = 1;
+			break;
+		case 0xe03081a3:
+		case 0xe003df88:
+			bitfury->chipgen = 2;
+	}
+
+	if ((!bitfury->chipgen) && stat_elapsed_secs >= chipgen_timeout_secs)
+	{
+		bitfury->chipgen = 1;
+		applog(LOG_WARNING, "%"PRIpreprv": Failed to detect chip generation in %d seconds, falling back to gen%d assumption",
+		       proc->proc_repr, chipgen_timeout_secs, bitfury->chipgen);
+	}
+
+	if (!bitfury->chipgen)
+		return;
+
+	applog(LOG_DEBUG, "%"PRIpreprv": Detected bitfury gen%d chip",
+	       proc->proc_repr, bitfury->chipgen);
+	bitfury_payload_to_atrvec(bitfury->atrvec, &bitfury->payload);
+}
+
+static int submit_fudged_nonce(uint32_t got_nonce, int nonce_cnt, struct bitfury_device *bitfury,
+								struct thr_info *thr, struct cgpu_info *proc, int stat_elapsed_secs)
+{
+	uint32_t nonce = bitfury_decnonce(got_nonce);
+	uint32_t coor;
+	int x, y;
+	struct work *work = ((!thr->prev_work) ? thr->work : !thr->prev_work);
+
+	if ( bitfury->current_nonce_high == bitfury->current_job_high && work != thr->work ) {
+		work = thr->work;
+	}
+
+	if ( !work || ((got_nonce & 0xFF) == 0xE0) ) {
+		return 0;
+	}
+
+	if ( (got_nonce & 0xFF) < 0x1C ) {
+		// 3 out of 24 cases
+		nonce -= 0x400000;
+		coor = ( ((nonce >> 29) & 0x07) | ((nonce >> 19) & 0x3F8) );
+		x = coor % 24;
+		y = coor / 24;
+
+		if ( y > 35 ) {
+			inc_hw_errors(thr, work, nonce);
+			goto err;
+		}
+
+		// The nonce looks OK - check if for the current or old work if job switched
+		if ( bitfury->current_nonce_high != bitfury->current_job_high &&
+				!test_nonce(work, nonce, false) && test_nonce(thr->work, nonce, false) ) {
+			work = thr->work;
+			bitfury->current_nonce_high = bitfury->current_job_high;
+		}
+
+		if ( submit_nonce(thr, work, nonce) ) {
+			// Store good or bad data per core ?
+			++bitfury->counter2;
+			++bitfury->ok_core_nonces[x][y];
+			bitfury_chipgen_detect(nonce, bitfury, proc, stat_elapsed_secs);
+			applog(LOG_DEBUG, "%"PRIpreprv": nonce %x = %08lx (%swork=%p) - 0x400000",
+					proc->proc_repr, nonce_cnt, (unsigned long)nonce, work != thr->work ? " prev " : "", work);
+			return 1;
+		} else {
+			applog(LOG_DEBUG, "%"PRIpreprv": BAD nonce %x = %08lx (%swork=%p) - 0x400000",
+					proc->proc_repr, nonce_cnt, (unsigned long)nonce, work != thr->work ? " prev " : "", work);
+			++bitfury->hw_core_nonces[x][y];
+		}
+	} else {
+		uint8_t fix = 8;
+		nonce -= 0x800000;
+retry:
+		coor = ( ((nonce >> 29) & 0x07) | ((nonce >> 19) & 0x3F8) );
+		x = coor % 24;
+		y = coor / 24;
+
+		if ( y > 35 ) {
+			inc_hw_errors(thr, work, nonce);
+			goto err;
+		}
+
+		if ( !test_nonce(work, nonce, false) ) {
+				if ( bitfury->current_nonce_high != bitfury->current_job_high && test_nonce(thr->work, nonce, false) ) {
+					work = the->work;
+					bitfury->current_nonce_high = bitfury->current_job_high;
+				} else if ( fix && x < 8) {	// 7 out of 24 cases
+					nonce = bitfury_decnonce(got_nonce);
+					fix = 0;
+					goto retry;
+				}
+		}
+
+		if ( submit_nonce(thr, work, nonce) ) {
+			// Store good or bad data per core ?
+			++bitfury->counter2;
+			++bitfury->ok_core_nonces[x][y];
+			bitfury_chipgen_detect(nonce, bitfury, proc, stat_elapsed_secs);
+			applog(LOG_DEBUG, "%"PRIpreprv": nonce %x = %08lx (%swork=%p) - 0x%x00000",
+					proc->proc_repr, nonce_cnt, (unsigned long)nonce, work != thr->work ? " prev " : "", work, fix);
+			return 1;
+		} else {
+			applog(LOG_DEBUG, "%"PRIpreprv": BAD nonce %x = %08lx (%swork=%p) - 0x%x00000",
+					proc->proc_repr, nonce_cnt, (unsigned long)nonce, work != thr->work ? " prev " : "", work, fix);
+			++bitfury->hw_core_nonces[x][y];
+		}
+	}
+
+err:
+	++bitfury->sample_hwe;
+}
+
 void bitfury_noop_job_start(struct thr_info __maybe_unused * const thr)
 {
 }
@@ -590,6 +717,7 @@ void bitfury_do_io(struct thr_info * const master_thr)
 		{
 			for (i = 0; i < n; ++i)
 			{
+#if 0
 				nonce = bitfury_decnonce(newbuf[i]);
 				if (unlikely(!bitfury->chipgen))
 				{
@@ -634,7 +762,6 @@ void bitfury_do_io(struct thr_info * const master_thr)
 				{
 					inc_hw_errors(thr, thr->work, nonce);
 					++bitfury->sample_hwe;
-					bitfury->strange_counter += 1;
 				}
 				if (++bitfury->sample_tot >= 0x40 || bitfury->sample_hwe >= 8)
 				{
@@ -658,6 +785,11 @@ chipgen_detected:
 				       proc->proc_repr, bitfury->chipgen);
 				bitfury_payload_to_atrvec(bitfury->atrvec, &bitfury->payload);
 			}
+#else
+				submit_fudged_nonce(newbuf[i], i, bitfury, thr, proc, stat_elapsed_secs);
+
+			}
+#endif // 0
 			bitfury->active = (bitfury->active + n) % 0x10;
 		}
 		

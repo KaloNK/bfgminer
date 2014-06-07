@@ -37,6 +37,10 @@ struct bitfury_device {
 	unsigned newbuf[17];
 	unsigned oldbuf[17];
 	bool oldjob;
+	bool current_nonce_high;
+	bool current_job_high;	// FIXME Is it the same as oldjob?
+	uint32_t ok_core_nonces[24][36];	// Rev 1 has only 21 X cores, Rev 2 has 24
+	uint32_t hw_core_nonces[24][36];
 	int active;
 	int chipgen;
 	int chipgen_probe;
@@ -51,7 +55,6 @@ struct bitfury_device {
 	int mhz_best;
 	unsigned slot;
 	unsigned fasync;
-	unsigned strange_counter;
 	bool force_reinit;
 	int desync_counter;
 	int sample_hwe;
